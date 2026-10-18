@@ -35,14 +35,29 @@ Consumers must validate counts without arithmetic overflow.
 
 ## Storage layout
 
-Data-file schema metadata locates each column's seed:
-`lance.seed.<column_name> = <buffer_index>:<rows_per_zone>`.
+Data-file schema metadata locates each column's version 1 seed:
+`lance.seed.<column_name> = <buffer_index>`.
 The referenced global buffer contains a complete Arrow IPC file.
 
-Records are ordered by zone. Record `i` starts at local row offset
-`i * rows_per_zone`; only the final zone may be shorter. Seeds contain no fragment
-ID or zone-start field. Consumers use the containing file's row coverage to place
-these ranges within a fragment.
+Records are ordered by the file's physical rows and are self-describing
+through `zone_length`:
+
+- The first record starts at local row offset 0.
+- Each later record starts at the checked cumulative sum of the earlier
+  records' `zone_length` values.
+- A zone shorter than the writer's collection granularity may appear at any
+  position (binary-copy compaction concatenates inputs' records verbatim, so
+  an input's tail zone can land mid file).
+- The records must cover the file's physical rows for this column completely
+  and contiguously: the `zone_length` values must sum, without overflow, to
+  the file's physical row count.
+- A non-empty file's records must not contain zero-length zones.
+
+Writers collect 8192 rows per zone by default, and a ZoneMap index may
+configure its own collection granularity; both are writer configuration, not
+part of this format. Version 1 locators and records carry no `rows_per_zone`.
+Seeds contain no fragment ID or zone-start field. Consumers use the containing
+file's row coverage to place these ranges within a fragment.
 
 ### Version 1 seed schema
 
@@ -68,9 +83,13 @@ pa.schema([
   this column's buffer and must agree with their null counts. Absence means null
   positions are unavailable, not that there are no nulls. Its encoding is unchanged.
 
-`rows_per_zone` is stored in the outer locator, not the IPC schema metadata.
-
 ## Version 0: existing seeds
+
+Version 0 keeps its original locator, `lance.seed.<column_name> =
+<buffer_index>:<rows_per_zone>`, and its original fixed-stride layout: record
+`i` starts at local row offset `i * rows_per_zone` and only the final zone may
+be shorter. Version 0 records must not be reinterpreted under the cumulative
+rule above.
 
 Seeds without `version` metadata use this existing schema:
 
